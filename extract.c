@@ -1,5 +1,5 @@
 /*
-  Copyright (c) 1990-2009 Info-ZIP.  All rights reserved.
+  Copyright (c) 1990-2014 Info-ZIP.  All rights reserved.
 
   See the accompanying file LICENSE, version 2009-Jan-02 or later
   (the contents of which are also included in unzip.h) for terms of use.
@@ -298,6 +298,8 @@ char ZCONST Far TruncNTSD[] =
 #ifndef SFX
    static ZCONST char Far InconsistEFlength[] = "bad extra-field entry:\n \
      EF block length (%u bytes) exceeds remaining EF data (%u bytes)\n";
+   static ZCONST char Far TooSmallEBlength[] = "bad extra-field entry:\n \
+     EF block length (%u bytes) invalid (< %d)\n";
    static ZCONST char Far InvalidComprDataEAs[] =
      " invalid compressed data for EAs\n";
 #  if (defined(WIN32) && defined(NTSD_EAS))
@@ -632,8 +634,8 @@ int extract_or_test_files(__G)    /* return PK-type error code */
                      */
                     Info(slide, 0x401, ((char *)slide,
                       LoadFarString(CentSigMsg), j + blknum*DIR_BLKSIZ + 1));
-                    Info(slide, 0x401, ((char *)slide,
-                      LoadFarString(ReportMsg)));
+                    Info(slide, 0x401,
+                         ((char *)slide,"%s", LoadFarString(ReportMsg)));
                     error_in_archive = PK_BADERR;
                 }
                 reached_end = TRUE;     /* ...so no more left to do */
@@ -914,8 +916,8 @@ int extract_or_test_files(__G)    /* return PK-type error code */
 
 #ifndef SFX
     if (no_endsig_found) {                      /* just to make sure */
-        Info(slide, 0x401, ((char *)slide, LoadFarString(EndSigMsg)));
-        Info(slide, 0x401, ((char *)slide, LoadFarString(ReportMsg)));
+        Info(slide, 0x401, ((char *)slide,"%s", LoadFarString(EndSigMsg)));
+        Info(slide, 0x401, ((char *)slide,"%s", LoadFarString(ReportMsg)));
         if (!error_in_archive)       /* don't overwrite stronger error */
             error_in_archive = PK_WARN;
     }
@@ -1422,8 +1424,17 @@ static int extract_or_test_entrylist(__G__ numchunk,
         if (G.lrec.compression_method == STORED) {
             zusz_t csiz_decrypted = G.lrec.csize;
 
-            if (G.pInfo->encrypted)
+            if (G.pInfo->encrypted) {
+                if (csiz_decrypted < 12) {
+                    /* handle the error now to prevent unsigned overflow */
+                    Info(slide, 0x401, ((char *)slide,
+                      LoadFarStringSmall(ErrUnzipNoFile),
+                      LoadFarString(InvalidComprData),
+                      LoadFarStringSmall2(Inflate)));
+                    return PK_ERR;
+                }
                 csiz_decrypted -= 12;
+            }
             if (G.lrec.ucsize != csiz_decrypted) {
                 Info(slide, 0x401, ((char *)slide,
                   LoadFarStringSmall2(WrnStorUCSizCSizDiff),
@@ -2103,23 +2114,20 @@ static int extract_or_test_member(__G)    /* return PK-type error code */
 
 #ifdef VMS                  /* VMS:  required even for stdout! (final flush) */
     if (!uO.tflag)           /* don't close NULL file */
-        close_outfile(__G);
+        error = close_outfile(__G);
 #else
 #ifdef DLL
     if (!uO.tflag && (!uO.cflag || G.redirect_data)) {
         if (G.redirect_data)
             FINISH_REDIRECT();
         else
-            close_outfile(__G);
+            error = close_outfile(__G);
     }
 #else
     if (!uO.tflag && !uO.cflag)   /* don't close NULL file or stdout */
-        close_outfile(__G);
+        error = close_outfile(__G);
 #endif
 #endif /* VMS */
-
-            /* GRR: CONVERT close_outfile() TO NON-VOID:  CHECK FOR ERRORS! */
-
 
     if (G.disk_full) {            /* set by flush() */
         if (G.disk_full > 1) {
@@ -2330,7 +2338,8 @@ static int TestExtraField(__G__ ef, ef_len)
         ebID = makeword(ef);
         ebLen = (unsigned)makeword(ef+EB_LEN);
 
-        if (ebLen > (ef_len - EB_HEADSIZE)) {
+        if (ebLen > (ef_len - EB_HEADSIZE))
+        {
            /* Discovered some extra field inconsistency! */
             if (uO.qflag)
                 Info(slide, 1, ((char *)slide, "%-22s ",
@@ -2465,11 +2474,29 @@ static int TestExtraField(__G__ ef, ef_len)
                 }
                 break;
             case EF_PKVMS:
-                if (makelong(ef+EB_HEADSIZE) !=
-                    crc32(CRCVAL_INITIAL, ef+(EB_HEADSIZE+4),
-                          (extent)(ebLen-4)))
-                    Info(slide, 1, ((char *)slide,
-                      LoadFarString(BadCRC_EAs)));
+                /* 2015-01-30 SMS.  Added sufficient-bytes test/message
+                 * here.  (Removed defective ebLen test above.)
+                 *
+                 * If sufficient bytes (EB_PKVMS_MINLEN) are available,
+                 * then compare the stored CRC value with the calculated
+                 * CRC for the remainder of the data (and complain about
+                 * a mismatch).
+                 */
+                if (ebLen < EB_PKVMS_MINLEN)
+                {
+                    /* Insufficient bytes available. */
+                    Info( slide, 1,
+                     ((char *)slide, LoadFarString( TooSmallEBlength),
+                     ebLen, EB_PKVMS_MINLEN));
+                }
+                else if (makelong(ef+ EB_HEADSIZE) !=
+                 crc32(CRCVAL_INITIAL,
+                 (ef+ EB_HEADSIZE+ EB_PKVMS_MINLEN),
+                 (extent)(ebLen- EB_PKVMS_MINLEN)))
+                {
+                     Info(slide, 1, ((char *)slide,
+                       LoadFarString(BadCRC_EAs)));
+                }
                 break;
             case EF_PKW32:
             case EF_PKUNIX:
@@ -2524,14 +2551,28 @@ static int test_compr_eb(__G__ eb, eb_size, compr_offset, test_uc_ebdata)
     ulg eb_ucsize;
     uch *eb_ucptr;
     int r;
+    ush method;
 
     if (compr_offset < 4)                /* field is not compressed: */
         return PK_OK;                    /* do nothing and signal OK */
 
+    /* Return no/bad-data error status if any problem is found:
+     *    1. eb_size is too small to hold the uncompressed size
+     *       (eb_ucsize).  (Else extract eb_ucsize.)
+     *    2. eb_ucsize is zero (invalid).  2014-12-04 SMS.
+     *    3. eb_ucsize is positive, but eb_size is too small to hold
+     *       the compressed data header.
+     */
     if ((eb_size < (EB_UCSIZE_P + 4)) ||
-        ((eb_ucsize = makelong(eb+(EB_HEADSIZE+EB_UCSIZE_P))) > 0L &&
-         eb_size <= (compr_offset + EB_CMPRHEADLEN)))
-        return IZ_EF_TRUNC;               /* no compressed data! */
+     ((eb_ucsize = makelong( eb+ (EB_HEADSIZE+ EB_UCSIZE_P))) == 0L) ||
+     ((eb_ucsize > 0L) && (eb_size <= (compr_offset + EB_CMPRHEADLEN))))
+        return IZ_EF_TRUNC;             /* no/bad compressed data! */
+
+    method = makeword(eb + (EB_HEADSIZE + compr_offset));
+    if ((method == STORED) && (eb_size != compr_offset + EB_CMPRHEADLEN + eb_ucsize))
+        return PK_ERR;            /* compressed & uncompressed
+                                   * should match in STORED
+                                   * method */
 
     if (
 #ifdef INT_16BIT
@@ -2849,8 +2890,21 @@ static void set_deferred_symlink(__G__ slnk_entry)
 } /* end function set_deferred_symlink() */
 #endif /* SYMLINKS */
 
+/*
+ * If Unicode is supported, assume we have what we need to do this
+ * check using wide characters, avoiding MBCS issues.
+ */
 
-
+#ifndef UZ_FNFILTER_REPLACECHAR
+        /* A convenient choice for the replacement of unprintable char codes is
+         * the "single char wildcard", as this character is quite unlikely to
+         * appear in filenames by itself.  The following default definition
+         * sets the replacement char to a question mark as the most common
+         * "single char wildcard"; this setting should be overridden in the
+         * appropiate system-specific configuration header when needed.
+         */
+# define UZ_FNFILTER_REPLACECHAR      '?'
+#endif
 
 /*************************/
 /*  Function fnfilter()  */        /* here instead of in list.c for SFX */
@@ -2862,48 +2916,168 @@ char *fnfilter(raw, space, size)   /* convert name to safely printable form */
     extent size;
 {
 #ifndef NATIVE   /* ASCII:  filter ANSI escape codes, etc. */
-    ZCONST uch *r=(ZCONST uch *)raw;
+    ZCONST uch *r; // =(ZCONST uch *)raw;
     uch *s=space;
     uch *slim=NULL;
     uch *se=NULL;
     int have_overflow = FALSE;
 
-    if (size > 0) {
-        slim = space + size
-#ifdef _MBCS
-                     - (MB_CUR_MAX - 1)
-#endif
-                     - 4;
+# if defined( UNICODE_SUPPORT) && defined( _MBCS)
+/* If Unicode support is enabled, and we have multi-byte characters,
+ * then do the isprint() checks by first converting to wide characters
+ * and checking those.  This avoids our having to parse multi-byte
+ * characters for ourselves.  After the wide-char replacements have been
+ * made, the wide string is converted back to the local character set.
+ */
+    wchar_t *wstring;    /* wchar_t version of raw */
+    size_t wslen;        /* length of wstring */
+    wchar_t *wostring;   /* wchar_t version of output string */
+    size_t woslen;       /* length of wostring */
+    char *newraw;        /* new raw */
+
+    /* 2012-11-06 SMS.
+     * Changed to check the value returned by mbstowcs(), and bypass the
+     * Unicode processing if it fails.  This seems to fix a problem
+     * reported in the SourceForge forum, but it's not clear that we
+     * should be doing any Unicode processing without some evidence that
+     * the name actually is Unicode.  (Check bit 11 in the flags before
+     * coming here?)
+     * http://sourceforge.net/p/infozip/bugs/40/
+     */
+
+    if (MB_CUR_MAX <= 1)
+    {
+        /* There's no point to converting multi-byte chars if there are
+         * no multi-byte chars.
+         */
+        wslen = (size_t)-1;
     }
-    while (*r) {
-        if (size > 0 && s >= slim && se == NULL) {
-            se = s;
+    else
+    {
+        /* Get Unicode wide character count (for storage allocation). */
+        wslen = mbstowcs( NULL, raw, 0);
+    }
+
+    if (wslen != (size_t)-1)
+    {
+        /* Apparently valid Unicode.  Allocate wide-char storage. */
+        wstring = (wchar_t *)malloc((wslen + 1) * sizeof(wchar_t));
+        if (wstring == NULL) {
+            strcpy( (char *)space, raw);
+            return (char *)space;
         }
-#ifdef QDOS
-        if (qlflag & 2) {
-            if (*r == '/' || *r == '.') {
+        wostring = (wchar_t *)malloc(2 * (wslen + 1) * sizeof(wchar_t));
+        if (wostring == NULL) {
+            free(wstring);
+            strcpy( (char *)space, raw);
+            return (char *)space;
+        }
+
+        /* Convert the multi-byte Unicode to wide chars. */
+        wslen = mbstowcs(wstring, raw, wslen + 1);
+
+        /* Filter the wide-character string. */
+        fnfilterw( wstring, wostring, (2 * (wslen + 1) * sizeof(wchar_t)));
+
+        /* Convert filtered wide chars back to multi-byte. */
+        woslen = wcstombs( NULL, wostring, 0);
+        if ((newraw = malloc(woslen + 1)) == NULL) {
+            free(wstring);
+            free(wostring);
+            strcpy( (char *)space, raw);
+            return (char *)space;
+        }
+        woslen = wcstombs( newraw, wostring, (woslen * MB_CUR_MAX) + 1);
+
+        if (size > 0) {
+            slim = space + size - 4;
+        }
+        r = (ZCONST uch *)newraw;
+        while (*r) {
+            if (size > 0 && s >= slim && se == NULL) {
+                se = s;
+            }
+#  ifdef QDOS
+            if (qlflag & 2) {
+                if (*r == '/' || *r == '.') {
+                    if (se != NULL && (s > (space + (size-3)))) {
+                        have_overflow = TRUE;
+                        break;
+                    }
+                    ++r;
+                    *s++ = '_';
+                    continue;
+                }
+            } else
+#  endif
+            {
                 if (se != NULL && (s > (space + (size-3)))) {
                     have_overflow = TRUE;
                     break;
                 }
-                ++r;
-                *s++ = '_';
-                continue;
+                *s++ = *r++;
             }
-        } else
+        }
+        if (have_overflow) {
+            strcpy((char *)se, "...");
+        } else {
+            *s = '\0';
+        }
+
+        free(wstring);
+        free(wostring);
+        free(newraw);
+    }
+    else
+# endif /* defined( UNICODE_SUPPORT) && defined( _MBCS) */
+    {
+        /* No Unicode support, or apparently invalid Unicode. */
+        r = (ZCONST uch *)raw;
+
+        if (size > 0) {
+            slim = space + size
+#ifdef _MBCS
+                         - (MB_CUR_MAX - 1)
+#endif
+                         - 4;
+        }
+        while (*r) {
+            if (size > 0 && s >= slim && se == NULL) {
+                se = s;
+            }
+#ifdef QDOS
+            if (qlflag & 2) {
+                if (*r == '/' || *r == '.') {
+                    if (se != NULL && (s > (space + (size-3)))) {
+                        have_overflow = TRUE;
+                        break;
+                    }
+                    ++r;
+                    *s++ = '_';
+                    continue;
+                }
+            } else
 #endif
 #ifdef HAVE_WORKING_ISPRINT
-# ifndef UZ_FNFILTER_REPLACECHAR
-    /* A convenient choice for the replacement of unprintable char codes is
-     * the "single char wildcard", as this character is quite unlikely to
-     * appear in filenames by itself.  The following default definition
-     * sets the replacement char to a question mark as the most common
-     * "single char wildcard"; this setting should be overridden in the
-     * appropiate system-specific configuration header when needed.
-     */
-#   define UZ_FNFILTER_REPLACECHAR      '?'
-# endif
-        if (!isprint(*r)) {
+            if (!isprint(*r)) {
+                if (*r < 32) {
+                    /* ASCII control codes are escaped as "^{letter}". */
+                    if (se != NULL && (s > (space + (size-4)))) {
+                        have_overflow = TRUE;
+                        break;
+                    }
+                    *s++ = '^', *s++ = (uch)(64 + *r++);
+                } else {
+                    /* Other unprintable codes are replaced by the
+                     * placeholder character. */
+                    if (se != NULL && (s > (space + (size-3)))) {
+                        have_overflow = TRUE;
+                        break;
+                    }
+                    *s++ = UZ_FNFILTER_REPLACECHAR;
+                    INCSTR(r);
+                }
+#else /* !HAVE_WORKING_ISPRINT */
             if (*r < 32) {
                 /* ASCII control codes are escaped as "^{letter}". */
                 if (se != NULL && (s > (space + (size-4)))) {
@@ -2911,47 +3085,30 @@ char *fnfilter(raw, space, size)   /* convert name to safely printable form */
                     break;
                 }
                 *s++ = '^', *s++ = (uch)(64 + *r++);
+#endif /* ?HAVE_WORKING_ISPRINT */
             } else {
-                /* Other unprintable codes are replaced by the
-                 * placeholder character. */
+#ifdef _MBCS
+                unsigned i = CLEN(r);
+                if (se != NULL && (s > (space + (size-i-2)))) {
+                    have_overflow = TRUE;
+                    break;
+                }
+                for (; i > 0; i--)
+                    *s++ = *r++;
+#else
                 if (se != NULL && (s > (space + (size-3)))) {
                     have_overflow = TRUE;
                     break;
                 }
-                *s++ = UZ_FNFILTER_REPLACECHAR;
-                INCSTR(r);
-            }
-#else /* !HAVE_WORKING_ISPRINT */
-        if (*r < 32) {
-            /* ASCII control codes are escaped as "^{letter}". */
-            if (se != NULL && (s > (space + (size-4)))) {
-                have_overflow = TRUE;
-                break;
-            }
-            *s++ = '^', *s++ = (uch)(64 + *r++);
-#endif /* ?HAVE_WORKING_ISPRINT */
-        } else {
-#ifdef _MBCS
-            unsigned i = CLEN(r);
-            if (se != NULL && (s > (space + (size-i-2)))) {
-                have_overflow = TRUE;
-                break;
-            }
-            for (; i > 0; i--)
                 *s++ = *r++;
-#else
-            if (se != NULL && (s > (space + (size-3)))) {
-                have_overflow = TRUE;
-                break;
-            }
-            *s++ = *r++;
 #endif
-         }
-    }
-    if (have_overflow) {
-        strcpy((char *)se, "...");
-    } else {
-        *s = '\0';
+             }
+        }
+        if (have_overflow) {
+            strcpy((char *)se, "...");
+        } else {
+            *s = '\0';
+        }
     }
 
 #ifdef WINDLL
@@ -2973,6 +3130,53 @@ char *fnfilter(raw, space, size)   /* convert name to safely printable form */
 } /* end function fnfilter() */
 
 
+#if defined( UNICODE_SUPPORT) && defined( _MBCS)
+
+/****************************/
+/*  Function fnfilter[w]()  */  /* (Here instead of in list.c for SFX.) */
+/****************************/
+
+/* fnfilterw() - Convert wide name to safely printable form. */
+
+/* fnfilterw() - Convert wide-character name to safely printable form. */
+
+wchar_t *fnfilterw( src, dst, siz)
+    ZCONST wchar_t *src;        /* Pointer to source char (string). */
+    wchar_t *dst;               /* Pointer to destination char (string). */
+    extent siz;                 /* Not used (!). */
+{
+    wchar_t *dsx = dst;
+
+    /* Filter the wide chars. */
+    while (*src)
+    {
+        if (iswprint( *src))
+        {
+            /* Printable code.  Copy it. */
+            *dst++ = *src;
+        }
+        else
+        {
+            /* Unprintable code.  Substitute something printable for it. */
+            if (*src < 32)
+            {
+                /* Replace ASCII control code with "^{letter}". */
+                *dst++ = (wchar_t)'^';
+                *dst++ = (wchar_t)(64 + *src);
+            }
+            else
+            {
+                /* Replace other unprintable code with the placeholder. */
+                *dst++ = (wchar_t)UZ_FNFILTER_REPLACECHAR;
+            }
+        }
+        src++;
+    }
+    *dst = (wchar_t)0;  /* NUL-terminate the destination string. */
+    return dsx;
+} /* fnfilterw(). */
+
+#endif /* defined( UNICODE_SUPPORT) && defined( _MBCS) */
 
 
 #ifdef SET_DIR_ATTRIB
@@ -3007,6 +3211,12 @@ __GDEF
     int err=BZ_OK;
     int repeated_buf_err;
     bz_stream bstrm;
+
+    if (G.incnt <= 0 && G.csize <= 0L) {
+        /* avoid an infinite loop */
+        Trace((stderr, "UZbunzip2() got empty input\n"));
+        return 2;
+    }
 
 #if (defined(DLL) && !defined(NO_SLIDE_REDIR))
     if (G.redirect_slide)

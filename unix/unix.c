@@ -30,6 +30,9 @@
 #define UNZIP_INTERNAL
 #include "unzip.h"
 
+#include <iconv.h>
+#include <langinfo.h>
+
 #ifdef SCO_XENIX
 #  define SYSNDIR
 #else  /* SCO Unix, AIX, DNIX, TI SysV, Coherent 4.x, ... */
@@ -1096,10 +1099,41 @@ static int get_extattribs(__G__ pzt, z_uidgid)
 #ifndef MTS
 
 /****************************/
+/* Function CloseError()    */
+/***************************/
+
+int CloseError(__G)
+    __GDEF
+{
+    int errval = PK_OK;
+    
+    if (fclose(G.outfile) < 0) {
+          switch (errno) {
+                case ENOSPC:
+                    /* Do we need this on fileio.c? */
+                    Info(slide, 0x4a1, ((char *)slide, "%s: write error (disk full?).   Continue? (y/n/^C) ",
+                          FnFilter1(G.filename)));
+                    fgets(G.answerbuf, 9, stdin);
+                    if (*G.answerbuf == 'y')     /* stop writing to this file */
+                        G.disk_full = 1;         /* pass to next */
+                    else
+                        G.disk_full = 2;         /* no: exit program */
+          
+                    errval = PK_DISK;
+                    break;
+
+                default:
+                    errval = PK_WARN;
+          }
+     }
+     return errval;
+} /* End of CloseError() */
+
+/****************************/
 /* Function close_outfile() */
 /****************************/
 
-void close_outfile(__G)    /* GRR: change to return PK-style warning level */
+int close_outfile(__G) 
     __GDEF
 {
     union {
@@ -1108,6 +1142,7 @@ void close_outfile(__G)    /* GRR: change to return PK-style warning level */
     } zt;
     ulg z_uidgid[2];
     int have_uidgid_flg;
+    int errval = PK_OK;
 
     have_uidgid_flg = get_extattribs(__G__ &(zt.t3), z_uidgid);
 
@@ -1141,16 +1176,16 @@ void close_outfile(__G)    /* GRR: change to return PK-style warning level */
             Info(slide, 0x201, ((char *)slide,
               "warning:  symbolic link (%s) failed: mem alloc overflow\n",
               FnFilter1(G.filename)));
-            fclose(G.outfile);
-            return;
+            errval = CloseError(G.outfile, G.filename);
+            return errval ? errval : PK_WARN;
         }
 
         if ((slnk_entry = (slinkentry *)malloc(slnk_entrysize)) == NULL) {
             Info(slide, 0x201, ((char *)slide,
               "warning:  symbolic link (%s) failed: no mem\n",
               FnFilter1(G.filename)));
-            fclose(G.outfile);
-            return;
+            errval = CloseError(G.outfile, G.filename);
+            return errval ? errval : PK_WARN;
         }
         slnk_entry->next = NULL;
         slnk_entry->targetlen = ucsize;
@@ -1174,10 +1209,10 @@ void close_outfile(__G)    /* GRR: change to return PK-style warning level */
               "warning:  symbolic link (%s) failed\n",
               FnFilter1(G.filename)));
             free(slnk_entry);
-            fclose(G.outfile);
-            return;
+            errval = CloseError(G.outfile, G.filename);
+            return errval ? errval : PK_WARN;
         }
-        fclose(G.outfile);                  /* close "link" file for good... */
+        errval = CloseError(G.outfile, G.filename); /* close "link" file for good... */
         slnk_entry->target[ucsize] = '\0';
         if (QCOND2)
             Info(slide, 0, ((char *)slide, "-> %s ",
@@ -1188,7 +1223,7 @@ void close_outfile(__G)    /* GRR: change to return PK-style warning level */
         else
             G.slink_head = slnk_entry;
         G.slink_last = slnk_entry;
-        return;
+        return errval;
     }
 #endif /* SYMLINKS */
 
@@ -1201,7 +1236,7 @@ void close_outfile(__G)    /* GRR: change to return PK-style warning level */
 #endif
 
 #if (defined(NO_FCHOWN))
-    fclose(G.outfile);
+    errval = CloseError(G.outfile, G.filename);
 #endif
 
     /* if -X option was specified and we have UID/GID info, restore it */
@@ -1227,7 +1262,7 @@ void close_outfile(__G)    /* GRR: change to return PK-style warning level */
     }
 
 #if (!defined(NO_FCHOWN) && defined(NO_FCHMOD))
-    fclose(G.outfile);
+    errval = CloseError(G.outfile, G.filename);
 #endif
 
 #if (!defined(NO_FCHOWN) && !defined(NO_FCHMOD))
@@ -1239,7 +1274,7 @@ void close_outfile(__G)    /* GRR: change to return PK-style warning level */
     if (fchmod(fileno(G.outfile), filtattr(__G__ G.pInfo->file_attr)))
         perror("fchmod (file attributes) error");
 
-    fclose(G.outfile);
+    errval = CloseError(G.outfile, G.filename);
 #endif /* !NO_FCHOWN && !NO_FCHMOD */
 
     /* skip restoring time stamps on user's request */
@@ -1267,6 +1302,7 @@ void close_outfile(__G)    /* GRR: change to return PK-style warning level */
 #endif
 #endif /* NO_FCHOWN || NO_FCHMOD */
 
+    return errval;
 } /* end function close_outfile() */
 
 #endif /* !MTS */
@@ -1874,3 +1910,104 @@ static void qlfix(__G__ ef_ptr, ef_len)
     }
 }
 #endif /* QLZIP */
+
+
+typedef struct {
+    char *local_charset;
+    char *archive_charset;
+} CHARSET_MAP;
+
+/* A mapping of local <-> archive charsets used by default to convert filenames
+ * of DOS/Windows Zip archives. Currently very basic. */
+static CHARSET_MAP dos_charset_map[] = {
+    { "ANSI_X3.4-1968", "CP850" },
+    { "ISO-8859-1", "CP850" },
+    { "CP1252", "CP850" },
+    { "UTF-8", "CP866" },
+    { "KOI8-R", "CP866" },
+    { "KOI8-U", "CP866" },
+    { "ISO-8859-5", "CP866" }
+};
+
+char OEM_CP[MAX_CP_NAME] = "";
+char ISO_CP[MAX_CP_NAME] = "";
+
+/* Try to guess the default value of OEM_CP based on the current locale.
+ * ISO_CP is left alone for now. */
+void init_conversion_charsets()
+{
+    const char *local_charset;
+    int i;
+
+    /* Make a guess only if OEM_CP not already set. */ 
+    if(*OEM_CP == '\0') {
+    	local_charset = nl_langinfo(CODESET);
+    	for(i = 0; i < sizeof(dos_charset_map)/sizeof(CHARSET_MAP); i++)
+    		if(!strcasecmp(local_charset, dos_charset_map[i].local_charset)) {
+    			strncpy(OEM_CP, dos_charset_map[i].archive_charset,
+    					MAX_CP_NAME - 1);
+
+			OEM_CP[MAX_CP_NAME - 1] = '\0';
+    			break;
+    		}
+    }
+}
+
+/* Convert a string from one encoding to the current locale using iconv().
+ * Be as non-intrusive as possible. If error is encountered during covertion
+ * just leave the string intact. */
+static void charset_to_intern(char *string, char *from_charset)
+{
+    iconv_t cd;
+    char *s,*d, *buf;
+    size_t slen, dlen, buflen;
+    const char *local_charset;
+
+    if(*from_charset == '\0')
+    	return;
+
+    buf = NULL;
+    local_charset = nl_langinfo(CODESET);
+
+    if((cd = iconv_open(local_charset, from_charset)) == (iconv_t)-1)
+        return;
+
+    slen = strlen(string);
+    s = string;
+
+    /*  Make sure OUTBUFSIZ + 1 never ends up smaller than FILNAMSIZ
+     *  as this function also gets called with G.outbuf in fileio.c
+     */
+    buflen = FILNAMSIZ;
+    if (OUTBUFSIZ + 1 < FILNAMSIZ)
+    {
+        buflen = OUTBUFSIZ + 1;
+    }
+
+    d = buf = malloc(buflen);
+    if(!d)
+    	goto cleanup;
+
+    bzero(buf,buflen);
+    dlen = buflen - 1;
+
+    if(iconv(cd, &s, &slen, &d, &dlen) == (size_t)-1)
+    	goto cleanup;
+    strncpy(string, buf, buflen);
+
+    cleanup:
+    free(buf);
+    iconv_close(cd);
+}
+
+/* Convert a string from OEM_CP to the current locale charset. */
+inline void oem_intern(char *string)
+{
+    charset_to_intern(string, OEM_CP);
+}
+
+/* Convert a string from ISO_CP to the current locale charset. */
+inline void iso_intern(char *string)
+{
+    charset_to_intern(string, ISO_CP);
+}

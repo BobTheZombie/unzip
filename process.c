@@ -1,5 +1,5 @@
 /*
-  Copyright (c) 1990-2009 Info-ZIP.  All rights reserved.
+  Copyright (c) 1990-2014 Info-ZIP.  All rights reserved.
 
   See the accompanying file LICENSE, version 2009-Jan-02 or later
   (the contents of which are also included in unzip.h) for terms of use.
@@ -1901,7 +1901,17 @@ int getZip64Data(__G__ ef_buf, ef_len)
     and a 4-byte version of disk start number.
     Sets both local header and central header fields.  Not terribly clever,
     but it means that this procedure is only called in one place.
+
+    2014-12-05 SMS.
+    Added checks to ensure that enough data are available before calling
+    makeint64() or makelong().  Replaced various sizeof() values with
+    simple ("4" or "8") constants.  (The Zip64 structures do not depend
+    on our variable sizes.)  Error handling is crude, but we should now
+    stay within the buffer.
   ---------------------------------------------------------------------------*/
+
+#define Z64FLGS 0xffff
+#define Z64FLGL 0xffffffff
 
     if (ef_len == 0 || ef_buf == NULL)
         return PK_COOL;
@@ -1909,42 +1919,64 @@ int getZip64Data(__G__ ef_buf, ef_len)
     Trace((stderr,"\ngetZip64Data: scanning extra field of length %u\n",
       ef_len));
 
-    while (ef_len >= EB_HEADSIZE) {
+    while (ef_len >= EB_HEADSIZE)
+    {
         eb_id = makeword(EB_ID + ef_buf);
         eb_len = makeword(EB_LEN + ef_buf);
 
-        if (eb_len > (ef_len - EB_HEADSIZE)) {
-            /* discovered some extra field inconsistency! */
+        if (eb_len > (ef_len - EB_HEADSIZE))
+        {
+            /* Extra block length exceeds remaining extra field length. */
             Trace((stderr,
               "getZip64Data: block length %u > rest ef_size %u\n", eb_len,
               ef_len - EB_HEADSIZE));
             break;
         }
-        if (eb_id == EF_PKSZ64) {
+        if (eb_id == EF_PKSZ64)
+        {
 
           int offset = EB_HEADSIZE;
 
-          if (G.crec.ucsize == 0xffffffff || G.lrec.ucsize == 0xffffffff){
+          if ((G.crec.ucsize == Z64FLGL) || (G.lrec.ucsize == Z64FLGL))
+          {
+            if (offset+ 8 > ef_len)
+              return PK_ERR;
+
             G.lrec.ucsize = G.crec.ucsize = makeint64(offset + ef_buf);
-            offset += sizeof(G.crec.ucsize);
+            offset += 8;
           }
-          if (G.crec.csize == 0xffffffff || G.lrec.csize == 0xffffffff){
-            G.csize = G.lrec.csize = G.crec.csize = makeint64(offset + ef_buf);
-            offset += sizeof(G.crec.csize);
+
+          if ((G.crec.csize == Z64FLGL) || (G.lrec.csize == Z64FLGL))
+          {
+            if (offset+ 8 > ef_len)
+              return PK_ERR;
+
+            G.csize = G.crec.csize = G.lrec.csize = makeint64(offset + ef_buf);
+            offset += 8;
           }
-          if (G.crec.relative_offset_local_header == 0xffffffff){
+
+          if (G.crec.relative_offset_local_header == Z64FLGL)
+          {
+            if (offset+ 8 > ef_len)
+              return PK_ERR;
+
             G.crec.relative_offset_local_header = makeint64(offset + ef_buf);
-            offset += sizeof(G.crec.relative_offset_local_header);
+            offset += 8;
           }
-          if (G.crec.disk_number_start == 0xffff){
+
+          if (G.crec.disk_number_start == Z64FLGS)
+          {
+            if (offset+ 4 > ef_len)
+              return PK_ERR;
+
             G.crec.disk_number_start = (zuvl_t)makelong(offset + ef_buf);
-            offset += sizeof(G.crec.disk_number_start);
+            offset += 4;
           }
 
           G.pInfo->zip64 = TRUE;
         }
 
-        /* Skip this extra field block */
+        /* Skip this extra field block. */
         ef_buf += (eb_len + EB_HEADSIZE);
         ef_len -= (eb_len + EB_HEADSIZE);
     }
@@ -2882,9 +2914,12 @@ unsigned ef_scan_for_izux(ef_buf, ef_len, ef_is_c, dos_mdatetime,
             break;
 
           case EF_IZUNIX2:
-            if (have_new_type_eb == 0) {
-                flags &= ~0x0ff;        /* ignore any previous IZUNIX field */
+            if (have_new_type_eb == 0) {        /* (< 1) */
                 have_new_type_eb = 1;
+            }
+            if (have_new_type_eb <= 1) {
+                /* Ignore any prior (EF_IZUNIX/EF_PKUNIX) UID/GID. */
+                flags &= 0x0ff;
             }
 #ifdef IZ_HAVE_UXUIDGID
             if (have_new_type_eb > 1)
@@ -2901,6 +2936,8 @@ unsigned ef_scan_for_izux(ef_buf, ef_len, ef_is_c, dos_mdatetime,
             /* new 3rd generation Unix ef */
             have_new_type_eb = 2;
 
+            /* Ignore any prior EF_IZUNIX/EF_PKUNIX/EF_IZUNIX2 UID/GID. */
+            flags &= 0x0ff;
         /*
           Version       1 byte      version of this extra field, currently 1
           UIDSize       1 byte      Size of UID field
@@ -2910,9 +2947,9 @@ unsigned ef_scan_for_izux(ef_buf, ef_len, ef_is_c, dos_mdatetime,
         */
 
 #ifdef IZ_HAVE_UXUIDGID
-            if (eb_len >= EB_UX3_MINLEN
-                && z_uidgid != NULL
-                && (*((EB_HEADSIZE + 0) + ef_buf) == 1)
+            if ((eb_len >= EB_UX3_MINLEN)
+                && (z_uidgid != NULL)
+                && ((*((EB_HEADSIZE + 0) + ef_buf) == 1)))
                     /* only know about version 1 */
             {
                 uch uid_size;
@@ -2921,13 +2958,11 @@ unsigned ef_scan_for_izux(ef_buf, ef_len, ef_is_c, dos_mdatetime,
                 uid_size = *((EB_HEADSIZE + 1) + ef_buf);
                 gid_size = *((EB_HEADSIZE + uid_size + 2) + ef_buf);
 
-                flags &= ~0x0ff;      /* ignore any previous UNIX field */
-
                 if ( read_ux3_value((EB_HEADSIZE + 2) + ef_buf,
-                                    uid_size, z_uidgid[0])
+                                    uid_size, &z_uidgid[0])
                     &&
                      read_ux3_value((EB_HEADSIZE + uid_size + 3) + ef_buf,
-                                    gid_size, z_uidgid[1]) )
+                                    gid_size, &z_uidgid[1]) )
                 {
                     flags |= EB_UX2_VALID;   /* signal success */
                 }
