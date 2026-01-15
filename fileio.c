@@ -1,5 +1,5 @@
 /*
-  Copyright (c) 1990-2009 Info-ZIP.  All rights reserved.
+  Copyright (c) 1990-2017 Info-ZIP.  All rights reserved.
 
   See the accompanying file LICENSE, version 2009-Jan-02 or later
   (the contents of which are also included in unzip.h) for terms of use.
@@ -176,6 +176,8 @@ static ZCONST char Far FilenameTooLongTrunc[] =
 #endif
 static ZCONST char Far ExtraFieldTooLong[] =
   "warning:  extra field too long (%d).  Ignoring...\n";
+static ZCONST char Far ExtraFieldCorrupt[] =
+  "warning:  extra field (type: 0x%04x) corrupt.  Continuing...\n";
 
 #ifdef WINDLL
    static ZCONST char Far DiskFullQuery[] =
@@ -1582,6 +1584,8 @@ int UZ_EXP UzpPassword (pG, rcnt, pwbuf, size, zfn, efn)
     int r = IZ_PW_ENTERED;
     char *m;
     char *prompt;
+    char *ep;
+    char *zp;
 
 #ifndef REENTRANT
     /* tell picky compilers to shut up about "unused variable" warnings */
@@ -1590,9 +1594,12 @@ int UZ_EXP UzpPassword (pG, rcnt, pwbuf, size, zfn, efn)
 
     if (*rcnt == 0) {           /* First call for current entry */
         *rcnt = 2;
-        if ((prompt = (char *)malloc(2*FILNAMSIZ + 15)) != (char *)NULL) {
-            sprintf(prompt, LoadFarString(PasswPrompt),
-                    FnFilter1(zfn), FnFilter2(efn));
+        zp = FnFilter1( zfn);
+        ep = FnFilter2( efn);
+        prompt = (char *)malloc(        /* Slightly too long (2* "%s"). */
+         sizeof( PasswPrompt)+ strlen( zp)+ strlen( ep));
+        if (prompt != (char *)NULL) {
+            sprintf(prompt, LoadFarString(PasswPrompt), zp, ep);
             m = prompt;
         } else
             m = (char *)LoadFarString(PasswPrompt2);
@@ -2008,6 +2015,7 @@ int do_string(__G__ length, option)   /* return PK-type error code */
     unsigned comment_bytes_left;
     unsigned int block_len;
     int error=PK_OK;
+    unsigned int length2;
 #ifdef AMIGA
     char tmp_fnote[2 * AMIGA_FILENOTELEN];   /* extra room for squozen chars */
 #endif
@@ -2294,10 +2302,20 @@ int do_string(__G__ length, option)   /* return PK-type error code */
             seek_zipf(__G__ G.cur_zipfile_bufstart - G.extra_bytes +
                       (G.inptr-G.inbuf) + length);
         } else {
-            if (readbuf(__G__ (char *)G.extra_field, length) == 0)
+            if ((length2 = readbuf(__G__ (char *)G.extra_field, length)) == 0)
                 return PK_EOF;
+            if(length2 < length) {
+              memset (__G__ (char *)G.extra_field+length2, 0 , length-length2);
+              length = length2;
+            }
             /* Looks like here is where extra fields are read */
-            getZip64Data(__G__ G.extra_field, length);
+            if (getZip64Data(__G__ G.extra_field, length) != PK_COOL)
+            {
+                Info(slide, 0x401, ((char *)slide,
+                 LoadFarString( ExtraFieldCorrupt), EF_PKSZ64));
+                error = PK_WARN;
+            }
+
 #ifdef UNICODE_SUPPORT
             G.unipath_filename = NULL;
             if (G.UzO.U_flag < 2) {

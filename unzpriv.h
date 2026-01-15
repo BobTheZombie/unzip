@@ -1214,6 +1214,7 @@
 # ifdef UNICODE_WCHAR
 #  if !(defined(_WIN32_WCE) || defined(POCKET_UNZIP))
 #   include <wchar.h>
+#   include <wctype.h>
 #  endif
 # endif
 # ifndef _MBCS  /* no need to include <locale.h> twice, see below */
@@ -1808,6 +1809,8 @@
 #define EB_NTSD_L_LEN     5    /* length of minimal local NT security data */
 #define EB_NTSD_VERSION   4    /* offset of NTSD version byte */
 #define EB_NTSD_MAX_VER   (0)  /* maximum version # we know how to handle */
+
+#define EB_PKVMS_MINLEN   4    /* minimum data length of PKVMS extra block */
 
 #define EB_ASI_CRC32      0    /* offset of ASI Unix field's crc32 checksum */
 #define EB_ASI_MODE       4    /* offset of ASI Unix permission mode field */
@@ -2407,6 +2410,12 @@ int    memflush                  OF((__GPRO__ ZCONST uch *rawbuf, ulg size));
 char  *fnfilter                  OF((ZCONST char *raw, uch *space,
                                      extent size));
 
+# if defined( UNICODE_SUPPORT) && defined( _MBCS)
+wchar_t *fnfilterw               OF((ZCONST wchar_t *src, wchar_t *dst,
+                                     extent siz));
+#endif
+
+
 /*---------------------------------------------------------------------------
     Decompression functions:
   ---------------------------------------------------------------------------*/
@@ -2618,7 +2627,7 @@ char    *GetLoadPath     OF((__GPRO));                              /* local */
    int   SetFileSize     OF((FILE *file, zusz_t filesize));         /* local */
 #endif
 #ifndef MTS /* macro in MTS */
-   void  close_outfile   OF((__GPRO));                              /* local */
+   int  close_outfile   OF((__GPRO));                              /* local */
 #endif
 #ifdef SET_SYMLINK_ATTRIBS
    int  set_symlnk_attribs  OF((__GPRO__ slinkentry *slnk_entry));  /* local */
@@ -3022,7 +3031,7 @@ char    *GetLoadPath     OF((__GPRO));                              /* local */
          !(((islochdr) || (isuxatt)) && \
            ((hostver) == 25 || (hostver) == 26 || (hostver) == 40))) || \
         (hostnum) == FS_HPFS_ || \
-        ((hostnum) == FS_NTFS_ && (hostver) == 50)) { \
+        ((hostnum) == FS_NTFS_ /* && (hostver) == 50 */ )) { \
         _OEM_INTERN((string)); \
     } else { \
         _ISO_INTERN((string)); \
