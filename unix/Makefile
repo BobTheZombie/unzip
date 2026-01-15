@@ -808,9 +808,14 @@ isi:		unix_make
 # systems.)
 linux:		unix_make
 	@echo 'NOTE:  use linux_noasm target for non-Intel Linux compiles.'
-	$(MAKE) unzips CC=gcc LD=gcc AS=gcc\
-	 CFLAGS="-O3 -Wall -DASM_CRC"\
-	 AF="-Di386 $(AF)" CRCA_O=crc_gcc$O
+	@case "`uname -m`" in \
+	  i[3-6]86) \
+	    $(MAKE) unzips CC=gcc LD=gcc AS=gcc\
+	     CFLAGS="-O3 -Wall -DASM_CRC"\
+	     AF="-Di386 $(AF)" CRCA_O=crc_gcc$O ;; \
+	  *) \
+	    $(MAKE) unzips CC=gcc LD=gcc CFLAGS="-O3 -Wall" ;; \
+	esac
 # GRR:  this echo is pointless; if user gets this far, no difference to install
 #	@echo 'Be sure to use the install_asm target rather than the install target'
 
