@@ -125,7 +125,7 @@ static ZCONST char CannotSetTimestamps[] =
 
 
 #ifndef SFX
-#ifdef NO_DIR                  /* for AT&T 3B1 */
+#if defined(NO_DIR) && !defined(DIRENT)  /* for AT&T 3B1 */
 
 #define opendir(path) fopen(path,"r")
 #define closedir(dir) fclose(dir)
@@ -179,7 +179,7 @@ struct dirent *readdir(dirp)
 
 } /* end function readdir() */
 
-#endif /* NO_DIR */
+#endif /* NO_DIR && !DIRENT */
 
 
 /**********************/
