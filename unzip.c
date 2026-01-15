@@ -2119,8 +2119,13 @@ int usage(__G__ error)   /* return PK-type error code */
           LoadFarStringSmall(VersionDate),
           LoadFarStringSmall2(ZipInfoExample), QUOTS,QUOTS));
         Info(slide, flag, ((char *)slide, LoadFarString(ZipInfoUsageLine2)));
+#ifdef UNIX
+        Info(slide, flag, ((char *)slide, LoadFarString(ZipInfoUsageLine3),
+          QUOT, QUOT, QUOT, QUOT, LoadFarStringSmall(ZipInfoUsageLine4)));
+#else
         Info(slide, flag, ((char *)slide, LoadFarString(ZipInfoUsageLine3),
           LoadFarStringSmall(ZipInfoUsageLine4)));
+#endif
 #ifdef VMS
         Info(slide, flag, ((char *)slide, "\n\
 You must quote non-lowercase options and filespecs, unless SET PROC/PARSE=EXT.\
