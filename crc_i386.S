@@ -49,6 +49,9 @@
  * the basic CRC_32_Table (for other purpose) is requested.
  */
 #if !defined(USE_ZLIB) && !defined(CRC_TABLE_ONLY)
+#if !defined(__i386__)
+# error "crc_i386.S requires a 32-bit x86 compiler target; use linux_noasm"
+#endif
 
 /* Preprocess with -DNO_UNDERLINE if your C compiler does not prefix
  * external symbols with an underline character '_'.
@@ -305,3 +308,7 @@ _crc32:                         /* ulg crc32(ulg crc, uch *buf, extent len) */
 
 .section .note.GNU-stack, "", @progbits
 .previous
+
+#if defined(__ELF__)
+.section .note.GNU-stack,"",@progbits
+#endif

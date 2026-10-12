@@ -1,0 +1,20 @@
+name: Modern compiler and parallel archive tests
+on: [push, pull_request]
+jobs:
+  gcc:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        version: ['13', '16']
+    container: gcc:${{ matrix.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: apt-get update && apt-get install -y python3 zlib1g-dev
+      - run: gcc --version
+      - run: make -f modern/Makefile -j2 test
+      - run: |
+          make -f modern/Makefile clean
+          make -f modern/Makefile -j2 CPU=znver2 test
+      - run: |
+          gcc -std=gnu17 -O1 -g -fsanitize=address,undefined tests/crc-test.c -lz -o tests/crc-test
+          ./tests/crc-test

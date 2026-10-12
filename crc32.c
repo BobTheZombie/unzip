@@ -22,6 +22,9 @@
 #define __CRC32_C       /* identifies this source module */
 
 #include "zip.h"
+#if defined(__GNUC__) && defined(__linux__)
+#include "modern/crc-fast.h"
+#endif
 
 #if (!defined(USE_ZLIB) || defined(USE_OWN_CRCTAB))
 
@@ -685,6 +688,10 @@ ulg crc32(crc, buf, len)
    pointer, then initialize the crc shift register contents instead.
    Return the current crc in either case. */
 {
+#if defined(__GNUC__) && defined(__linux__)
+  /* Retain the legacy interface, with a portable optimized implementation. */
+  return (ulg)uz_crc32_fast((uint32_t)crc, buf, (size_t)len);
+#else
   register z_uint4 c;
   register ZCONST ulg near *crc_32_tab;
 
@@ -725,6 +732,7 @@ ulg crc32(crc, buf, len)
   } while (--len);
 
   return REV_BE(c) ^ 0xffffffffL;   /* (instead of ~c for 64-bit machines) */
+#endif
 }
 #endif /* !ASM_CRC */
 #endif /* !CRC_TABLE_ONLY */

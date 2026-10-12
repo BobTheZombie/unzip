@@ -1,6 +1,9 @@
 *.o
-/Makefile
-/funzip
 /unzip
 /unzipsfx
+/funzip
+/unzip-parallel
+/Makefile
+/flags
+/tests/crc-test
 .DS_Store

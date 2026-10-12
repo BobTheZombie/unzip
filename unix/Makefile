@@ -305,7 +305,7 @@ $(IZ_OUR_BZIP2_DIR)/libbz2.a:
 	 CFLAGS="$(CFLAGS_BZ)" RM="rm -f" )
 
 
-crc32$O:	crc32.c $(UNZIP_H) zip.h crc32.h
+crc32$O:	crc32.c $(UNZIP_H) zip.h crc32.h modern/crc-fast.h modern/crc-table.h
 crypt$O:	crypt.c $(UNZIP_H) zip.h crypt.h crc32.h ttyio.h
 envargs$O:	envargs.c $(UNZIP_H)
 explode$O:	explode.c $(UNZIP_H)
@@ -328,7 +328,7 @@ zipinfo$O:	zipinfo.c $(UNZIP_H)
 unzipsfx$O:	unzip.c $(UNZIP_H) crypt.h unzvers.h consts.h
 	$(CC) -c $(CF) -DSFX -o $@ unzip.c
 
-crc32_$O:	crc32.c $(UNZIP_H) zip.h crc32.h
+crc32_$O:	crc32.c $(UNZIP_H) zip.h crc32.h modern/crc-fast.h modern/crc-table.h
 	$(CC) -c $(CF) -DSFX -o $@ crc32.c
 
 crypt_$O:	crypt.c $(UNZIP_H) zip.h crypt.h crc32.h ttyio.h
@@ -806,15 +806,15 @@ isi:		unix_make
 # -fno-strength-reduce have virtually no effect beyond -O3.  Add "-m486
 # -malign-functions=2 -malign-jumps=2 -malign-loops=2" for Pentium [Pro]
 # systems.)
-linux:		unix_make
-	@echo 'NOTE:  use linux_noasm target for non-Intel Linux compiles.'
-	@case "`uname -m`" in \
-	  i[3-6]86) \
-	    $(MAKE) unzips CC=gcc LD=gcc AS=gcc\
-	     CFLAGS="-O3 -Wall -DASM_CRC"\
-	     AF="-Di386 $(AF)" CRCA_O=crc_gcc$O ;; \
+linux:          unix_make
+	@case "`$(CC) -dumpmachine`" in \
+	  i?86-*) \
+	    $(MAKE) unzips CC="$(CC)" LD="$(CC)" AS="$(CC)" \
+	      CFLAGS="$(CFLAGS) -std=gnu17 -DASM_CRC" \
+	      AF="-Di386 $(AF)" CRCA_O=crc_gcc$O ;; \
 	  *) \
-	    $(MAKE) unzips CC=gcc LD=gcc CFLAGS="-O3 -Wall" ;; \
+	    $(MAKE) unzips CC="$(CC)" LD="$(CC)" \
+	      CFLAGS="$(CFLAGS) -std=gnu17" ;; \
 	esac
 # GRR:  this echo is pointless; if user gets this far, no difference to install
 #	@echo 'Be sure to use the install_asm target rather than the install target'
@@ -824,7 +824,7 @@ linux_asm:	linux
 # Linux (Posix, approximately SysV):  virtually any version since before 0.96,
 # for any platform.  Change "-O" to "-O3" or whatever, as desired...
 linux_noasm:	unix_make
-	$(MAKE) unzips CC=gcc LD=gcc CFLAGS="-O -Wall"
+	$(MAKE) unzips CC="$(CC)" LD="$(CC)" CFLAGS="$(CFLAGS) -std=gnu17"
 
 # Linux with lcc compiler:  __inline__ (stat.h) not recognized, and must edit
 # /usr/include/gnu/types.h to get rid of "long long" if __LCC__ defined.  -O3
